@@ -11,67 +11,159 @@ permissions:
 jobs:
   notify-discord:
     runs-on: ubuntu-latest
+    timeout-minutes: 2
 
     steps:
-      - name: Process GitHub Star Event
+      - name: Process GitHub Star Event and Notify Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: |
           python3 - <<'PY'
           import json
           import os
+          import sys
           import urllib.request
+          import urllib.error
+          from urllib.parse import urlparse
+          from datetime import datetime, timezone
 
-          with open(os.environ["GITHUB_EVENT_PATH"]) as f:
+          # 1. Read GitHub event
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
               event = json.load(f)
 
+          # 2. Validate event
           if event.get("action") != "started":
-              print("Not a new star. Skipping.")
-              exit(0)
+              print("Not a new star event. Skipping.")
+              sys.exit(0)
 
-          repo = event["repository"]
-          user = event["sender"]
+          repository = event.get("repository", {})
+          sender = event.get("sender", {})
+
+          repo_name = repository.get("full_name", "Unknown")
+          repo_url = repository.get("html_url", "")
+          username = sender.get("login", "Unknown")
+          user_url = sender.get("html_url", "")
+
+          total_stars = repository.get("stargazers_count", "Unknown")
+          language = repository.get("language") or "Not specified"
+
+          description = (
+              repository.get("description")
+              or "No description available"
+          )
+
+          # 3. Validate Discord webhook
+          webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
+          if not webhook_url:
+              raise RuntimeError("Discord webhook secret is missing.")
+
+          parsed_url = urlparse(webhook_url)
+
+          if (
+              parsed_url.scheme != "https"
+              or parsed_url.hostname != "discord.com"
+              or not parsed_url.path.startswith("/api/webhooks/")
+          ):
+              raise RuntimeError(
+                  "Invalid Discord webhook URL. "
+                  "Use a fresh https://discord.com/api/webhooks/ URL."
+              )
+
+          # 4. Prepare Discord notification
+          timestamp = datetime.now(timezone.utc).isoformat()
 
           payload = {
               "username": "GitHub Star Monitor",
-              "embeds": [{
-                  "title": "⭐ New GitHub Star!",
-                  "description": (
-                      f"Someone starred **{repo['full_name']}**!"
-                  ),
-                  "color": 16766720,
-                  "fields": [
-                      {
-                          "name": "Repository",
-                          "value": repo["html_url"],
-                          "inline": False
+              "embeds": [
+                  {
+                      "title": "⭐ New GitHub Star!",
+                      "description": (
+                          f"Someone just starred "
+                          f"[{repo_name}]({repo_url})!"
+                      ),
+                      "color": 16766720,
+                      "fields": [
+                          {
+                              "name": "Repository",
+                              "value": repo_name,
+                              "inline": True
+                          },
+                          {
+                              "name": "New Stargazer",
+                              "value": (
+                                  f"[{username}]({user_url})"
+                                  if user_url else username
+                              ),
+                              "inline": True
+                          },
+                          {
+                              "name": "Total Stars",
+                              "value": str(total_stars),
+                              "inline": True
+                          },
+                          {
+                              "name": "Programming Language",
+                              "value": language,
+                              "inline": True
+                          },
+                          {
+                              "name": "Description",
+                              "value": description[:1000],
+                              "inline": False
+                          }
+                      ],
+                      "footer": {
+                          "text": "GitHub Star Monitor • Python Automation"
                       },
-                      {
-                          "name": "Stargazer",
-                          "value": user["login"],
-                          "inline": True
-                      },
-                      {
-                          "name": "Total Stars",
-                          "value": str(repo["stargazers_count"]),
-                          "inline": True
-                      }
-                  ],
-                  "footer": {
-                      "text": "GitHub Star Monitor"
+                      "timestamp": timestamp
                   }
-              }],
-              "allowed_mentions": {"parse": []}
+              ],
+              "allowed_mentions": {
+                  "parse": []
+              }
           }
 
+          # 5. Send notification to Discord
           request = urllib.request.Request(
-              os.environ["DISCORD_WEBHOOK_URL"],
-              data=json.dumps(payload).encode(),
-              headers={"Content-Type": "application/json"},
+              webhook_url,
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Content-Type": "application/json",
+                  "User-Agent": "GitHub-Star-Monitor/1.0"
+              },
               method="POST"
           )
 
-          with urllib.request.urlopen(request, timeout=20) as response:
-              print("Discord notification sent:", response.status)
+          try:
+              with urllib.request.urlopen(
+                  request,
+                  timeout=20
+              ) as response:
+
+                  print("Discord notification delivered!")
+                  print("HTTP Status:", response.status)
+
+          except urllib.error.HTTPError as error:
+
+              response_body = error.read().decode(
+                  "utf-8",
+                  errors="replace"
+              )
+
+              print("Discord HTTP Error:", error.code)
+              print("Discord Response:", response_body)
+
+              raise
+
+          except urllib.error.URLError as error:
+
+              print("Network Error:", error.reason)
+              raise
+
+          print("Repository:", repo_name)
+          print("Stargazer:", username)
+          print("Total Stars:", total_stars)
 
           PY

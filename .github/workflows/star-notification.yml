@@ -1,0 +1,77 @@
+
+name: GitHub Star Notification
+
+on:
+  watch:
+    types: [started]
+
+permissions:
+  contents: read
+
+jobs:
+  notify-discord:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Process GitHub Star Event
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          with open(os.environ["GITHUB_EVENT_PATH"]) as f:
+              event = json.load(f)
+
+          if event.get("action") != "started":
+              print("Not a new star. Skipping.")
+              exit(0)
+
+          repo = event["repository"]
+          user = event["sender"]
+
+          payload = {
+              "username": "GitHub Star Monitor",
+              "embeds": [{
+                  "title": "⭐ New GitHub Star!",
+                  "description": (
+                      f"Someone starred **{repo['full_name']}**!"
+                  ),
+                  "color": 16766720,
+                  "fields": [
+                      {
+                          "name": "Repository",
+                          "value": repo["html_url"],
+                          "inline": False
+                      },
+                      {
+                          "name": "Stargazer",
+                          "value": user["login"],
+                          "inline": True
+                      },
+                      {
+                          "name": "Total Stars",
+                          "value": str(repo["stargazers_count"]),
+                          "inline": True
+                      }
+                  ],
+                  "footer": {
+                      "text": "GitHub Star Monitor"
+                  }
+              }],
+              "allowed_mentions": {"parse": []}
+          }
+
+          request = urllib.request.Request(
+              os.environ["DISCORD_WEBHOOK_URL"],
+              data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+
+          with urllib.request.urlopen(request, timeout=20) as response:
+              print("Discord notification sent:", response.status)
+
+          PY
